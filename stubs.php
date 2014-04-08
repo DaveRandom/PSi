@@ -282,7 +282,7 @@ function ps_fill($psdoc) {}
 function ps_findfont($psdoc, $fontname, $encoding, $embed = false) {}
 
 /**
- * Fetches the full buffer containig the generated PS data
+ * Fetches the full buffer containing the generated PS data
  *
  * @param resource $psdoc
  * @return string
@@ -603,7 +603,7 @@ function ps_setgray($psdoc, $gray) {}
 function ps_setlinecap($psdoc, $type) {}
 
 /**
- * Sets how contected lines are joined
+ * Sets how connected lines are joined
  *
  * @param resource $psdoc
  * @param int $type

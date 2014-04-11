@@ -2,12 +2,6 @@
 
 /**
  * Class PSImage
- *
- * @property-read \PSDocument $document
- * @property-read int $id
- * @property-read float $width
- * @property-read float $height
- * @property-read string $encoding
  */
 class PSImage
 {
@@ -30,14 +24,14 @@ class PSImage
     private $document;
 
     /**
-     * @var resource
+     * @var int
      */
-    private $resource;
+    private $id;
 
     /**
      * @var int
      */
-    private $id;
+    private $dtor;
 
     /**
      * @var float
@@ -50,7 +44,7 @@ class PSImage
     private $height;
 
     /**
-     * @var string
+     * @var int
      */
     private $encoding;
 
@@ -58,42 +52,87 @@ class PSImage
      * Constructor
      *
      * @param PSDocument $document
-     * @param resource $resource
      * @param int $id
+     * @param callable $dtor
      */
-    public function __construct(PSDocument $document, $resource, $id)
+    public function __construct(PSDocument $document, $id, callable $dtor)
     {
+        $this->document = $document;
         $this->id = $id;
+        $this->dtor = $dtor;
     }
 
     /**
-     * Magic getter
+     * Get the document that owns this image
      *
-     * @param string $name
-     * @return mixed
+     * @return \PSDocument
      */
-    public function __get($name)
+    public function getOwnerDocument()
     {
-        switch ($name) {
-            case 'document': case 'id':
-                return $this->$name;
+        return $this->document;
+    }
 
-            case 'width': case 'height':
-                if (!isset($this->$name)) {
-                    $this->$name = ps_get_value($this->resource, "image{$name}", $this->id);
-                }
+    /**
+     * Get the ID of this image within the owner document
+     *
+     * @return int
+     */
+    public function getID()
+    {
+        return $this->id;
+    }
 
-                return $this->$name;
-
-            case 'encoding':
-                if (!isset($this->encoding)) {
-                    $encoding = ps_get_parameter($this->resource, 'imageencoding', $this->id);
-                    $this->encoding = $encoding === 'hex' ? self::ENCODING_HEX : self::ENCODING_85;
-                }
-
-                return $this->encoding;
+    /**
+     * Get the width of this image in (units?)
+     *
+     * @return float
+     */
+    public function getWidth()
+    {
+        if (!isset($this->width)) {
+            $this->width = ps_get_value($this->document->resource, "imagewidth", $this->id);
         }
 
-        return null;
+        return $this->width;
+    }
+
+    /**
+     * Get the height of this image in (units?)
+     *
+     * @return float
+     */
+    public function getHeight()
+    {
+        if (!isset($this->height)) {
+            $this->height = ps_get_value($this->document->resource, "imageheight", $this->id);
+        }
+
+        return $this->height;
+    }
+
+    /**
+     * Get the encoding constant for this image
+     *
+     * @return int
+     */
+    public function getEncoding()
+    {
+        if (!isset($this->encoding)) {
+            $encoding = ps_get_parameter($this->document->resource, 'imageencoding', $this->id);
+            $this->encoding = $encoding === 'hex' ? self::ENCODING_HEX : self::ENCODING_85;
+        }
+
+        return $this->encoding;
+    }
+
+    /**
+     * Destroy this image and call the destructor function
+     */
+    public function close()
+    {
+        ps_close_image($this->document->resource, $this->id);
+        call_user_func($this->dtor);
+
+        $this->document = $this->dtor = null;
     }
 }

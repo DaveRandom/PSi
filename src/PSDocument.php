@@ -3,14 +3,7 @@
 /**
  * Class PSDocument
  *
- * @property-read float $width
- * @property-read float $height
- * @property-read int $orientation
- * @property-read string $keywords
- * @property-read string $subject
- * @property-read string $title
- * @property-read string $creator
- * @property-read string $author
+ * @property-read resource $resource read-only access to the underlying ps resource
  */
 class PSDocument
 {
@@ -41,29 +34,65 @@ class PSDocument
     private $orientation;
 
     /**
-     * @var string
+     * @var string[]
      */
-    private $keywords;
+    private $meta = [];
 
     /**
-     * @var string
+     * @var \PSImage[]
      */
-    private $subject;
+    private $images = [];
+
+    private $fonts = [];
 
     /**
-     * @var string
+     * @var string[]
      */
-    private $title;
+    private $searchPaths = [];
 
     /**
-     * @var string
+     * Normalise meta field names to lower case and set the values on the document resource
+     *
+     * @param string[] $meta
+     * @throws \LogicException
      */
-    private $creator;
+    private function setMeta(array $meta)
+    {
+        static $metaFields = [
+            'keywords' => 'Keywords', 'subject' => 'Subject', 'title' => 'Title',
+            'creator' => 'Creator', 'author' => 'Author',
+        ];
+
+        foreach ($meta as $name => $value) {
+            $nameLower = strtolower($name);
+
+            if (!isset($metaFields[$nameLower])) {
+                throw new \LogicException('Unknown field in meta data: ' . $name);
+            }
+
+            if ($value !== null) {
+                $this->meta[$nameLower] = (string) $value;
+                ps_set_info($this->resource, $metaFields[$nameLower], $this->meta[$nameLower]);
+            }
+        }
+    }
 
     /**
-     * @var string
+     * Set the dimensions of the document
+     *
+     * @param float $width
+     * @param float $height
+     * @param int $orientation
      */
-    private $author;
+    private function setDimensions($width, $height, $orientation)
+    {
+        $this->width = $width;
+        $this->height = $height;
+        ps_set_info($this->resource, 'BoundingBox', "0 0 {$width} {$height}");
+
+        $this->orientation = $orientation === self::ORI_LANDSCAPE ? self::ORI_LANDSCAPE : self::ORI_PORTRAIT;
+        ps_set_info($this->resource, 'Orientation', $this->orientation === self::ORI_LANDSCAPE ? 'Landscape' : 'Portrait');
+    }
 
     /**
      * Resolve an integer image type identifier to a string
@@ -90,12 +119,39 @@ class PSDocument
     /**
      * Create a PSImage object from an image identifier and type
      *
-     * @param int $imageId
+     * The destructor function allows us to remove the image from the document's internal list without
+     * exposing the list structure itself as public.
+     *
+     * @param int $id
      * @return \PSImage
      */
-    private function createImage($imageId)
+    private function createImage($id)
     {
-        return new \PSImage($this, $this->resource, $imageId);
+        if (!isset($this->images[$id])) {
+            $this->images[$id] = new \PSImage($this, $id, function() use($id) {
+                unset($this->images[$id]);
+            });
+        }
+
+        return $this->images[$id];
+    }
+
+    private function createFont($name, $id)
+    {
+
+    }
+
+    /**
+     * Add a path to the list of search paths if not already set
+     *
+     * @param string $path
+     */
+    private function addSearchPath($path)
+    {
+        if (!isset($this->searchPaths[$path])) {
+            ps_set_parameter($this->resource, 'SearchPath', $path);
+            $this->searchPaths[$path] = true;
+        }
     }
 
     /**
@@ -110,11 +166,6 @@ class PSDocument
      */
     public function __construct($width, $height, $orientation = self::ORI_PORTRAIT, $meta = [])
     {
-        static $infoFields = [
-            'keywords' => 'Keywords', 'subject' => 'Subject', 'title' => 'Title',
-            'creator' => 'Creator', 'author' => 'Author',
-        ];
-
         if (!function_exists('ps_new')) {
             throw new \LogicException('The PS extension must be installed to use this class');
         }
@@ -123,23 +174,8 @@ class PSDocument
             throw new \RuntimeException('Failed to initialise the document resource');
         }
 
-        foreach ((array) $meta as $name => $value) {
-            if (!isset($infoFields[$name = strtolower($name)])) {
-                throw new \LogicException('Unknown field in meta data: ' . $name);
-            }
-
-            if ($value !== null) {
-                $this->$name = (string) $value;
-                ps_set_info($this->resource, $infoFields[$name], $this->$name);
-            }
-        }
-
-        $this->width = (float) $width;
-        $this->height = (float) $height;
-        ps_set_info($this->resource, 'BoundingBox', "0 0 {$this->width} {$this->height}");
-
-        $this->orientation = ((int) $orientation) === self::ORI_LANDSCAPE ? self::ORI_LANDSCAPE : self::ORI_PORTRAIT;
-        ps_set_info($this->resource, 'Orientation', $this->orientation === self::ORI_LANDSCAPE ? 'Landscape' : 'Portrait');
+        $this->setDimensions((float) $width, (float) $height, (int) $orientation);
+        $this->setMeta((array) $meta);
     }
 
     /**
@@ -150,9 +186,59 @@ class PSDocument
      */
     public function __get($name)
     {
-        static $readableProperties = ['width', 'height', 'keywords', 'subject', 'title', 'creator', 'author'];
+        return $name === 'resource' ? $this->resource : null;
+    }
 
-        return in_array($name, $readableProperties) ? $this->$name : null;
+    /**
+     * Get the width of the document in (units?)
+     *
+     * @return float
+     */
+    public function getWidth()
+    {
+        return $this->width;
+    }
+
+    /**
+     * Get the height of the document in (units?)
+     *
+     * @return float
+     */
+    public function getHeight()
+    {
+        return $this->height;
+    }
+
+    /**
+     * Get the orientation of the document
+     *
+     * @return int
+     */
+    public function getOrientation()
+    {
+        return $this->orientation;
+    }
+
+    /**
+     * Get a meta field value or an associative meta fields
+     *
+     * @param string $key
+     * @return string|string[]
+     * @throws \LogicException
+     */
+    public function getMeta($key = null)
+    {
+        if ($key !== null) {
+            $keyLower = strtolower($key);
+
+            if (!isset($this->meta[$keyLower])) {
+                throw new \LogicException('Unknown meta field name: ' . $key);
+            }
+
+            return $this->meta[$keyLower];
+        }
+
+        return $this->meta;
     }
 
     /**
@@ -186,18 +272,18 @@ class PSDocument
      * @throws \LogicException
      * @throws \RuntimeException
      */
-    public function createImageFromData($data, $width, $height, $type, $colors = 4, $bpc = 8)
+    public function loadImageFromData($data, $width, $height, $type, $colors = 4, $bpc = 8)
     {
-        $imageId = ps_open_image(
+        $id = ps_open_image(
             $this->resource, $this->resolveImageType($type), null, $data,
             strlen($data), $width, $height, $colors, $bpc, null
         );
 
-        if (!$imageId) {
+        if (!$id) {
             throw new \RuntimeException('Unable to create image from data string');
         }
 
-        return $this->createImage($imageId, $type);
+        return $this->createImage($id);
     }
 
     /**
@@ -209,7 +295,7 @@ class PSDocument
      * @throws \RuntimeException
      * @throws \LogicException
      */
-    public function createImageFromFile($filePath, $type = null)
+    public function loadImageFromFile($filePath, $type = null)
     {
         static $knownExtensions = [
             'png'  => \PSImage::TYPE_PNG,
@@ -232,13 +318,13 @@ class PSDocument
             $type = $knownExtensions[$extension];
         }
 
-        $imageId = ps_open_image_file($this->resource, $this->resolveImageType($type), $filePath);
+        $id = ps_open_image_file($this->resource, $this->resolveImageType($type), $filePath);
 
-        if (!$imageId) {
+        if (!$id) {
             throw new \RuntimeException('Unable to create image from file: ' . $filePath);
         }
 
-        return $this->createImage($imageId, $type);
+        return $this->createImage($id);
     }
 
     /**
@@ -249,25 +335,72 @@ class PSDocument
      * @throws \RuntimeException
      * @throws \LogicException
      */
-    public function createImageFromGD($gd)
+    public function loadImageFromGD($gd)
     {
         if (!function_exists('imagecreate')) {
             throw new \LogicException('Method requires the GD extension to be loaded');
         }
 
-        $imageId = ps_open_memory_image($this->resource, (int) $gd);
+        $id = ps_open_memory_image($this->resource, (int) $gd);
 
-        if (!$imageId) {
+        if (!$id) {
             throw new \RuntimeException('Unable to create image from GD resource');
         }
 
-        return $this->createImage($imageId);
+        return $this->createImage($id);
+    }
+
+    /**
+     * Get an image from its identifier
+     *
+     * @param int $id
+     * @return \PSImage
+     * @throws \LogicException
+     */
+    public function getImageById($id)
+    {
+        if (!isset($this->images[$id])) {
+            throw new \LogicException('Undefined image id: ' . $id);
+        }
+
+        return $this->images[$id];
+    }
+
+    public function loadFont($name, $encoding = '', $embed = false)
+    {
+        if (is_file($name . '.afm')) {
+            // slightly ugly way to guarantee that fonts referenced by name only that exist in
+            // the cwd will be found, by forcing it into the path-based route
+            $name = $name . '.afm';
+        }
+
+        if (pathinfo($name, PATHINFO_EXTENSION) === 'afm') {
+            $fontName = pathinfo($name, PATHINFO_FILENAME);
+
+            if (is_file($name)) {
+                $dirPath = dirname(realpath($name));
+
+                if ($embed && !is_file($dirPath . '/' . $fontName . '.pfb')) {
+                    throw new \RuntimeException('Embedded fonts must provide a corresponding pfb file');
+                }
+
+                $this->addSearchPath($dirPath);
+            }
+        } else {
+            $fontName = (string) $name;
+        }
+
+        $id = ps_findfont($this->resource, $fontName, (string) $encoding, (bool) $embed);
+
+        if (!$id) {
+            throw new \RuntimeException('Unable to load font: ' . $fontName);
+        }
     }
 
     /**
      * Place an image in the document
      *
-     * @param PSImage $image
+     * @param \PSImage $image
      * @param float $x
      * @param float $y
      * @param float $scale
@@ -276,12 +409,12 @@ class PSDocument
      */
     public function placeImage(\PSImage $image, $x, $y, $scale = 1.0)
     {
-        if ($image->document !== $this) {
+        if ($image->getOwnerDocument() !== $this) {
             throw new \LogicException('Supplied image is not owned by this document');
         }
 
-        if (!ps_place_image($this->resource, $image->id, $x, $y, $scale)) {
-            throw new \RuntimeException('Unable to place image ' . $image->id . ' in document');
+        if (!ps_place_image($this->resource, $image->getID(), $x, $y, $scale)) {
+            throw new \RuntimeException('Unable to place image ' . $image->getID() . ' in document');
         }
     }
 }
